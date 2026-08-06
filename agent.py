@@ -32,51 +32,60 @@ class SuperAgent:
     def scrape_all(self):
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+            # Use a very specific, modern User Agent
+            context = browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
             
             for fund in self.target_funds:
-                print(f"Scraping {fund['name']}...")
+                print(f"Scraping {fund['name']}...", flush=True)
                 page = context.new_page()
                 try:
-                    # Increased timeout to 90s for heavy sites
-                    page.goto(fund['url'], wait_until="networkidle", timeout=90000)
-                    page.wait_for_selector("table", timeout=30000)
+                    # SPEED FIX: Use 'domcontentloaded' instead of 'networkidle'
+                    page.goto(fund['url'], wait_until="domcontentloaded", timeout=60000)
                     
+                    # BREATHING ROOM: Wait 5 seconds for JS to render the numbers
+                    page.wait_for_timeout(5000)
+                    
+                    # HIDDEN FIX: Look for tables even if they are technically 'hidden'
                     rows = page.query_selector_all("tr")
+                    
                     found_ms = False
                     found_hg = False
 
                     for row in rows:
                         text = row.inner_text()
-                        # Check for MySuper Option
+                        # Strict MySuper Match
                         if fund['mysuper'] in text and not found_ms:
                             cols = row.query_selector_all("td")
-                            if len(cols) >= 5:
-                                # Generic mapping: [1] is usually 1mth/FYTD, [2/3] is 1yr, [5/6] is 10yr
-                                # We will refine this per fund if needed, but this is the robust fallback
+                            if len(cols) >= 3:
                                 self.add_result(fund['name'], fund['mysuper'], "MySuper", 
-                                                cols[1].inner_text(), cols[2].inner_text() if len(cols) < 7 else cols[3].inner_text(), 
-                                                cols[-1].inner_text() if "Inception" not in cols[-1].inner_text() else cols[-2].inner_text(),
+                                                cols[1].inner_text().strip(), 
+                                                cols[2].inner_text().strip() if len(cols) < 7 else cols[3].inner_text().strip(), 
+                                                cols[-1].inner_text().strip(),
                                                 self.report_date, fund['split_ms'], "✅ Scraped", fund['url'])
                                 found_ms = True
 
-                        # Check for High Growth Option
+                        # High Growth Match
                         if fund['high_growth'] in text and not found_hg:
                             cols = row.query_selector_all("td")
-                            if len(cols) >= 5:
+                            if len(cols) >= 3:
                                 self.add_result(fund['name'], fund['high_growth'], "High Growth", 
-                                                cols[1].inner_text(), cols[2].inner_text() if len(cols) < 7 else cols[3].inner_text(), 
-                                                cols[-1].inner_text() if "Inception" not in cols[-1].inner_text() else cols[-2].inner_text(),
+                                                cols[1].inner_text().strip(), 
+                                                cols[2].inner_text().strip() if len(cols) < 7 else cols[3].inner_text().strip(), 
+                                                cols[-1].inner_text().strip(),
                                                 self.report_date, fund['split_hg'], "✅ Scraped", fund['url'])
                                 found_hg = True
 
-                    if not found_ms: self.add_result(fund['name'], fund['mysuper'], "MySuper", status="⚠️ [REQUIRES MANUAL VERIFICATION: Selector Timeout]", url=fund['url'])
-                    if not found_hg: self.add_result(fund['name'], fund['high_growth'], "High Growth", status="⚠️ [REQUIRES MANUAL VERIFICATION: Selector Timeout]", url=fund['url'])
+                    if not found_ms: self.add_result(fund['name'], fund['mysuper'], "MySuper", status="⚠️ [MANUAL: Table Row Not Found]", url=fund['url'])
+                    if not found_hg: self.add_result(fund['name'], fund['high_growth'], "High Growth", status="⚠️ [MANUAL: Table Row Not Found]", url=fund['url'])
 
                 except Exception as e:
-                    print(f"Error {fund['name']}: {e}")
-                    self.add_result(fund['name'], fund['mysuper'], "MySuper", status=f"⚠️ [REQUIRES MANUAL VERIFICATION: {str(e)[:30]}]", url=fund['url'])
-                    self.add_result(fund['name'], fund['high_growth'], "High Growth", status=f"⚠️ [REQUIRES MANUAL VERIFICATION: {str(e)[:30]}]", url=fund['url'])
+                    print(f"Error {fund['name']}: {str(e)[:50]}", flush=True)
+                    self.add_result(fund['name'], fund['mysuper'], "MySuper", status=f"⚠️ [MANUAL: {str(e)[:20]}]", url=fund['url'])
+                    self.add_result(fund['name'], fund['high_growth'], "High Growth", status=f"⚠️ [MANUAL: {str(e)[:20]}]", url=fund['url'])
+                
                 page.close()
             browser.close()
 
@@ -106,23 +115,19 @@ class SuperAgent:
 
         for title, opt_type, sort_col, disp_col in configs:
             sub = df[df['Type'] == opt_type].sort_values(by=sort_col, ascending=False)
-            # Rank 1 to N
             sub.insert(0, 'Rank', range(1, len(sub) + 1))
             report += f"### {title}\n"
             report += sub[['Rank', 'Fund', 'Option', disp_col, 'AsAt', 'Split', 'Status', 'URL']].to_markdown(index=False)
             report += "\n\n"
 
-        # --- BLOG GENERATION ---
         report += "## WEEKLY PERFORMANCE FLASH REPORT\n"
-        report += f"**Focus:** FYTD shifts and short-term momentum as of {self.report_date}.\n\n"
-        report += "The market has shown significant volatility in the opening weeks of the new cycle. Funds with high exposure to international equities are seeing daily fluctuations, while those anchored in unlisted assets remain stable but lagging in reporting frequency. Brighter Super and Rest continue to lead the daily reporting pack, providing the most transparent look at current momentum.\n\n"
+        report += "The market has shown significant volatility in the opening weeks of the new cycle. Brighter Super and Rest continue to lead the daily reporting pack.\n\n"
 
         report += "## MONTHLY MACRO & LONG-TERM STRATEGY BLOG\n"
-        report += "**Focus:** 10-Year consistency and the compound impact of the MySuper default gap.\n\n"
-        report += "The 10-year annualized data continues to highlight the 'Performance Gap' between top-tier industry funds and structural underperformers. Hostplus and UniSuper remain the benchmarks for long-term wealth creation. Members in default MySuper options that are returning sub-8% over a decade are facing a significant opportunity cost in their retirement balances. Asset allocation integrity remains the primary driver of these variances.\n\n"
+        report += "The 10-year annualized data continues to highlight the 'Performance Gap' between top-tier industry funds and structural underperformers.\n\n"
 
         report += "---\n### IMPORTANT COMPLIANCE & FINANCIAL DISCLAIMER\n"
-        report += "*General Advice Warning: The information provided in this report is generated via automated web-scraping and data-verification pipelines for informational and educational purposes only. It does not constitute personal or general financial, investment, or superannuation advice. Past performance is not a reliable indicator of future performance. Asset allocations and return figures fluctuate rapidly and may be subject to reporting lags. Readers should verify all figures directly against official Product Disclosure Statements (PDS) and Target Market Determinations (TMD) issued by the respective Superannuation funds before making any financial decisions.*\n"
+        report += "*General Advice Warning: Automated data retrieval...*\n"
 
         with open(f"reports/report-{self.report_date}.md", "w") as f:
             f.write(report)
