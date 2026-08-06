@@ -22,6 +22,13 @@ class SuperAgent:
         ]
         self.results = []
 
+    def extract_percentages(self, text):
+        """Finds all numbers that look like returns, ignoring dates."""
+        # Matches 8.81, 10.2, -0.05, 9.56% etc.
+        # Specifically ignores patterns like 30/06/2026
+        matches = re.findall(r'(?<!/)(?<!\d)-?\d+\.\d+%?', text)
+        return [m.replace('%', '') for m in matches]
+
     def add_result(self, fund, option, opt_type, fytd="N/A", one_yr="N/A", ten_yr="N/A", as_at="N/A", split="N/A", status="❌ Failed", url=""):
         self.results.append({
             "Fund": fund, "Option": option, "Type": opt_type,
@@ -31,7 +38,6 @@ class SuperAgent:
 
     def scrape_all(self):
         with sync_playwright() as p:
-            # STEALTH: Launch with specific arguments to hide 'headless' nature
             browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
             context = browser.new_context(
                 viewport={'width': 1920, 'height': 1080},
@@ -42,40 +48,32 @@ class SuperAgent:
                 print(f"Scraping {fund['name']}...", flush=True)
                 page = context.new_page()
                 try:
-                    # STEALTH: Mimic human behavior
                     page.goto(fund['url'], wait_until="domcontentloaded", timeout=60000)
-                    page.wait_for_timeout(7000) # Wait for JS to settle
+                    page.wait_for_timeout(8000) # Wait for JS
                     
-                    # DATA EXTRACTION: Search for the row containing the option name
-                    # We use a more robust text-based search instead of strict table selectors
-                    rows = page.query_selector_all("tr")
-                    if not rows: # Fallback for div-based tables
-                        rows = page.query_selector_all("div[role='row']")
-
+                    rows = page.query_selector_all("tr") or page.query_selector_all("div[role='row']")
                     found_ms = False
                     found_hg = False
 
                     for row in rows:
                         row_text = row.inner_text()
                         
-                        # Match MySuper
+                        # Logic for MySuper
                         if fund['mysuper'] in row_text and not found_ms:
-                            cells = row.query_selector_all("td") or row.query_selector_all("div[role='cell']")
-                            if len(cells) >= 3:
-                                # Logic: FYTD is usually 2nd, 1Yr is 3rd or 4th, 10Yr is usually last
-                                vals = [c.inner_text().strip() for c in cells]
+                            pcts = self.extract_percentages(row_text)
+                            if len(pcts) >= 2:
+                                # FYTD is usually 1st, 1Yr is 2nd/3rd, 10Yr is usually last
                                 self.add_result(fund['name'], fund['mysuper'], "MySuper", 
-                                                vals[1], vals[3] if len(vals) > 4 else vals[2], vals[-1],
+                                                pcts[0], pths[2] if len(pcts) > 4 else pcts[1], pcts[-1],
                                                 self.report_date, fund['split_ms'], "✅ Scraped", fund['url'])
                                 found_ms = True
 
-                        # Match High Growth
+                        # Logic for High Growth
                         if fund['high_growth'] in row_text and not found_hg:
-                            cells = row.query_selector_all("td") or row.query_selector_all("div[role='cell']")
-                            if len(cells) >= 3:
-                                vals = [c.inner_text().strip() for c in cells]
+                            pcts = self.extract_percentages(row_text)
+                            if len(pcts) >= 2:
                                 self.add_result(fund['name'], fund['high_growth'], "High Growth", 
-                                                vals[1], vals[3] if len(vals) > 4 else vals[2], vals[-1],
+                                                pcts[0], pcts[2] if len(pcts) > 4 else pcts[1], pcts[-1],
                                                 self.report_date, fund['split_hg'], "✅ Scraped", fund['url'])
                                 found_hg = True
 
