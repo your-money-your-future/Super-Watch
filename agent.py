@@ -7,6 +7,9 @@ import json
 class SuperAgent:
     def __init__(self):
         self.report_date = datetime.now().strftime("%Y-%m-%d")
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+        }
         self.target_funds = [
             "AustralianSuper", "ART", "Hostplus", "HESTA", "Cbus", 
             "UniSuper", "Rest Super", "Aware Super", "CareSuper", 
@@ -14,138 +17,121 @@ class SuperAgent:
         ]
         self.results = []
 
-    def log_verification(self, fund, option_type, issue):
-        """Agent B: Verification Failure Logger"""
-        return f"⚠️ [REQUIRES MANUAL VERIFICATION: {issue}]"
+    def add_result(self, fund, option, opt_type, fytd="N/A", one_yr="N/A", ten_yr="N/A", as_at="N/A", split="N/A", status="❌ Failed"):
+        self.results.append({
+            "Fund": fund, "Option": option, "Type": opt_type,
+            "FYTD": fytd, "OneYear": one_yr, "TenYear": ten_yr, 
+            "AsAt": as_at, "Split": split, "Status": status
+        })
 
     def scrape_brighter_super(self):
-        """Agent A: Brighter Super JSON Endpoint Logic"""
+        """Agent A: Brighter Super JSON Endpoint"""
         url = "https://www.brightersuper.com.au/api/performance/getlatest"
         try:
-            r = requests.get(url, timeout=10)
+            r = requests.get(url, headers=self.headers, timeout=15)
             data = r.json()
             
-            # Extract MySuper (Strict Rule: Group 0)
-            mysuper_raw = data['Groups'][0]['Items'][0]
-            self.results.append({
-                "Fund": "Brighter Super", "Option": "MySuper (Accumulation)", "Type": "MySuper",
-                "FYTD": mysuper_raw['FytdUnitPrice'], "OneYear": mysuper_raw['OneYear'],
-                "TenYear": mysuper_raw['TenYear'], "AsAt": mysuper_raw['DailyUnitPriceDate'],
-                "Split": "70/30", "Status": "✅ Verified"
-            })
+            # MySuper (Strict Rule: Group 0)
+            ms = data['Groups'][0]['Items'][0]
+            self.add_result("Brighter Super", "MySuper", "MySuper", 
+                            ms['FytdUnitPrice'], ms['OneYear'], ms['TenYear'], ms['DailyUnitPriceDate'], "70/30", "✅ Scraped")
 
-            # Extract High Growth (Growth Option)
-            growth_raw = data['Groups'][1]['Items'][0]
-            self.results.append({
-                "Fund": "Brighter Super", "Option": "Growth", "Type": "High Growth",
-                "FYTD": growth_raw['FytdUnitPrice'], "OneYear": growth_raw['OneYear'],
-                "TenYear": growth_raw['TenYear'], "AsAt": growth_raw['DailyUnitPriceDate'],
-                "Split": "85/15", "Status": "✅ Verified"
-            })
+            # Growth (High Growth)
+            hg = data['Groups'][1]['Items'][0]
+            self.add_result("Brighter Super", "Growth", "High Growth", 
+                            hg['FytdUnitPrice'], hg['OneYear'], hg['TenYear'], hg['DailyUnitPriceDate'], "85/15", "✅ Scraped")
         except Exception as e:
-            print(f"Error Brighter Super: {e}")
+            self.add_result("Brighter Super", "MySuper", "MySuper", status=f"❌ Error: {str(e)[:30]}")
+            self.add_result("Brighter Super", "Growth", "High Growth", status=f"❌ Error: {str(e)[:30]}")
 
     def scrape_bussq(self):
-        """Agent A: BUSSQ HTML Logic with 10Yr Annualized Fix"""
-        # BUSSQ often blocks simple scrapers; using verified data structure
-        # Rule: 10Yr is 6.85%, NOT 9.06% (Inception)
-        self.results.append({
-            "Fund": "BUSSQ", "Option": "Balanced Growth", "Type": "MySuper",
-            "FYTD": "N/A", "OneYear": "5.89", "TenYear": "6.85", 
-            "AsAt": "30/06/2026", "Split": "75/25", "Status": "✅ Verified"
-        })
-        self.results.append({
-            "Fund": "BUSSQ", "Option": "High Growth", "Type": "High Growth",
-            "FYTD": "N/A", "OneYear": "5.88", "TenYear": "8.04", 
-            "AsAt": "31/05/2026", "Split": "90/10", "Status": "⚠️ [Option Closed]"
-        })
+        """Agent A: BUSSQ HTML Table Scraper"""
+        url = "https://www.bussq.com.au/investments/investing-with-bussq/performance"
+        try:
+            r = requests.get(url, headers=self.headers, timeout=15)
+            soup = BeautifulSoup(r.text, 'html.parser')
+            table = soup.find('table')
+            rows = table.find_all('tr')
+            
+            for row in rows:
+                cols = row.find_all('td')
+                if cols and "Balanced Growth" in cols[0].text:
+                    # BUSSQ Table Structure: [0]Name, [1]1Yr, [2]3Yr, [3]5Yr, [4]10Yr
+                    one_yr = cols[1].text.strip().replace('%', '')
+                    ten_yr = cols[4].text.strip().replace('%', '')
+                    self.add_result("BUSSQ", "Balanced Growth", "MySuper", 
+                                    "N/A", one_yr, ten_yr, "30/06/2026", "75/25", "✅ Scraped")
+                
+                if cols and "High Growth" in cols[0].text:
+                    one_yr = cols[1].text.strip().replace('%', '')
+                    ten_yr = cols[4].text.strip().replace('%', '')
+                    self.add_result("BUSSQ", "High Growth", "High Growth", 
+                                    "N/A", one_yr, ten_yr, "31/05/2026", "90/10", "✅ Scraped (Closed)")
+        except Exception as e:
+            self.add_result("BUSSQ", "Balanced Growth", "MySuper", status="❌ Blocked/Table Changed")
 
     def scrape_art(self):
-        """Agent A: ART Performance Scraper"""
-        # ART uses a robust API for their performance tables
-        self.results.append({
-            "Fund": "ART", "Option": "Super Savings Balanced", "Type": "MySuper",
-            "FYTD": "0.10", "OneYear": "7.97", "TenYear": "8.69", 
-            "AsAt": "29/07/2026", "Split": "70/30", "Status": "✅ Verified"
-        })
-        self.results.append({
-            "Fund": "ART", "Option": "High Growth Pool", "Type": "High Growth",
-            "FYTD": "0.21", "OneYear": "9.21", "TenYear": "10.07", 
-            "AsAt": "29/07/2026", "Split": "85/15", "Status": "✅ Verified"
-        })
+        """Agent A: ART Scraper (Simplified for this run)"""
+        # ART often requires a POST request or specific API headers
+        # For now, we attempt a basic GET on their performance page
+        url = "https://www.australianretirementtrust.com.au/investments/performance"
+        try:
+            r = requests.get(url, headers=self.headers, timeout=15)
+            if r.status_code == 200:
+                # Logic to find ART figures would go here
+                # If not found, we mark as N/A
+                self.add_result("ART", "Super Savings Balanced", "MySuper", status="⚠️ [Requires Playwright]")
+            else:
+                self.add_result("ART", "Super Savings Balanced", "MySuper", status="❌ Blocked")
+        except:
+            self.add_result("ART", "Super Savings Balanced", "MySuper", status="❌ Connection Failed")
 
-    def add_market_placeholders(self):
-        """
-        Ensures Matrix Completeness for funds with high anti-bot protection.
-        In a production environment, these would be updated via Playwright/Selenium.
-        """
-        remaining = [f for f in self.target_funds if f not in [r['Fund'] for r in self.results]]
-        for fund in remaining:
-            # Adding verified 30 June 2026 data as baseline
-            self.results.append({
-                "Fund": fund, "Option": "Default/MySuper", "Type": "MySuper",
-                "FYTD": "N/A", "OneYear": "9.50", "TenYear": "8.20", 
-                "AsAt": "30/06/2026", "Split": "70/30", "Status": "⚠️ [REQUIRES MANUAL VERIFICATION: Anti-Bot Triggered]"
-            })
-            self.results.append({
-                "Fund": fund, "Option": "High Growth", "Type": "High Growth",
-                "FYTD": "N/A", "OneYear": "11.20", "TenYear": "9.80", 
-                "AsAt": "30/06/2026", "Split": "90/10", "Status": "⚠️ [REQUIRES MANUAL VERIFICATION: Anti-Bot Triggered]"
-            })
+    def fill_missing_funds(self):
+        """Ensures all 12 funds are in the list with N/A status if not scraped"""
+        scraped_funds = set([r['Fund'] for r in self.results])
+        for fund in self.target_funds:
+            if fund not in scraped_funds:
+                self.add_result(fund, "N/A", "MySuper", status="⚠️ [Blocked by Anti-Bot]")
+                self.add_result(fund, "N/A", "High Growth", status="⚠️ [Blocked by Anti-Bot]")
 
     def generate_tables(self):
         df = pd.DataFrame(self.results)
-        # Convert numeric columns for sorting
+        # Clean numeric data for sorting
         for col in ['FYTD', 'OneYear', 'TenYear']:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
-        table_configs = [
-            ("High Growth — FYTD", "High Growth", "FYTD"),
+        report_md = f"# Superannuation Intelligence Report: {self.report_date}\n\n"
+        
+        configs = [
             ("High Growth — 1-Year", "High Growth", "OneYear"),
             ("High Growth — 10-Year", "High Growth", "TenYear"),
-            ("MySuper — FYTD", "MySuper", "FYTD"),
             ("MySuper — 1-Year", "MySuper", "OneYear"),
             ("MySuper — 10-Year", "MySuper", "TenYear"),
         ]
 
-        report_md = f"# Superannuation Intelligence Report: {self.report_date}\n\n"
-        
-        for title, opt_type, sort_col in table_configs:
+        for title, opt_type, sort_col in configs:
             sub_df = df[df['Type'] == opt_type].sort_values(by=sort_col, ascending=False)
-            # Ensure N/A (NaN) are at the bottom
-            nas = sub_df[sub_df[sort_col].isna()]
-            valid = sub_df[~sub_df[sort_col].isna()]
-            final_df = pd.concat([valid, nas])
-            
             report_md += f"### {title}\n"
-            report_md += final_df[['Fund', 'Option', sort_col, 'AsAt', 'Split', 'Status']].to_markdown(index=False)
+            report_md += sub_df[['Fund', 'Option', sort_col, 'AsAt', 'Status']].to_markdown(index=False)
             report_md += "\n\n"
 
         return report_md
 
     def run(self):
-        print("Agent A: Starting Scraping Phase...")
         self.scrape_brighter_super()
         self.scrape_bussq()
         self.scrape_art()
+        self.fill_missing_funds()
         
-        print("Agent B: Verifying Matrix Completeness...")
-        self.add_market_placeholders()
-        
-        print("Generating Final Report...")
         report = self.generate_tables()
-        
-        # Add Disclaimer
         report += "\n\n**IMPORTANT COMPLIANCE & FINANCIAL DISCLAIMER**\n"
-        report += "*General Advice Warning: The information provided in this report is generated via automated web-scraping and data-verification pipelines...*"
+        report += "*General Advice Warning: Automated data retrieval...*"
         
         with open(f"reports/report-{self.report_date}.md", "w") as f:
             f.write(report)
-        print(f"Success. Report saved to reports/report-{self.report_date}.md")
 
 if __name__ == "__main__":
     import os
-    if not os.path.exists('reports'):
-        os.makedirs('reports')
+    if not os.path.exists('reports'): os.makedirs('reports')
     agent = SuperAgent()
     agent.run()
